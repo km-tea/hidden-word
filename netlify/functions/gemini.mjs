@@ -6,21 +6,23 @@ const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 export class AiError extends Error {}
 
+// 생각(thinking) 단계를 줄이면 응답이 훨씬 빨라져요. 모델이 이 설정을 지원하지 않으면 자동으로 끄고 다시 시도해요.
+// GEMINI_THINKING=off 로 직접 끌 수도 있어요.
+let thinkingLevel = process.env.GEMINI_THINKING || 'minimal';
+
 async function callGemini(prompt, { temperature = 0, timeoutMs = 20000 } = {}) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new AiError('GEMINI_API_KEY가 설정되지 않았어요.');
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const url = `${ENDPOINT}/${encodeURIComponent(model)}:generateContent`;
 
-  const body = JSON.stringify({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { temperature },
-  });
-
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const generationConfig = { temperature };
+    if (thinkingLevel && thinkingLevel !== 'off') generationConfig.thinkingConfig = { thinkingLevel };
+    const body = JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig });
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -36,6 +38,11 @@ async function callGemini(prompt, { temperature = 0, timeoutMs = 20000 } = {}) {
       }
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
+        if (res.status === 400 && /thinking/i.test(detail) && thinkingLevel !== 'off') {
+          thinkingLevel = 'off'; // 이 모델은 thinking 설정을 받지 않아요 → 끄고 같은 시도를 다시
+          attempt--;
+          continue;
+        }
         throw new AiError(`Gemini 요청 실패 (${res.status}) ${detail.slice(0, 200)}`);
       }
       const data = await res.json();
@@ -60,7 +67,7 @@ export async function pingGemini() {
   const t0 = Date.now();
   try {
     const reply = await callGemini('JSON 하나로만 답해: {"ok": true}', { timeoutMs: 15000 });
-    return { ok: true, ms: Date.now() - t0, reply: reply.slice(0, 100) };
+    return { ok: true, ms: Date.now() - t0, thinking: thinkingLevel, reply: reply.slice(0, 100) };
   } catch (err) {
     return { ok: false, ms: Date.now() - t0, error: err.message };
   }
@@ -84,42 +91,40 @@ const clampInt = (v) => {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
 };
 
-const SIMILARITY_PROMPT = (a, b) => `너는 '히든 워드' 게임의 심판이야. 한국어 단어 A(정답)와 B(추측)를 비교해서 JSON 하나로만 답해. 설명이나 코드블록은 붙이지 마.
+const SIMILARITY_PROMPT = (a, b) => `한국어 단어 게임 '히든 워드'의 심판이야. A(정답)와 B(추측)를 비교해 JSON 하나만 출력해. 설명·코드블록 금지.
 
-[1단계: 단어 확인]
-A와 B가 각각 실제로 쓰이는 한국어 단어인지 확인해.
-- 일상에서 쓰이는 일반 단어(명사·동사·형용사 등)는 true.
-- 오타, 의미 없는 글자 나열, 자음·모음만 있는 글자, 사람 이름 같은 고유명사, 욕설은 false.
-- false인 단어가 있으면 가장 가까운 올바른 단어를 suggestion에 넣어 (없으면 빈 문자열).
+1) 단어 확인
+- a_ok, b_ok: 실제로 쓰이는 한국어 단어인가? (오타, 의미 없는 글자, 자음·모음만 있는 글자, 사람 이름, 욕설이면 false)
+- b_noun: B가 명사인가? (동사·형용사·부사·감탄사·활용형이면 false. 예: 먹다, 예쁘다, 빨리는 false)
+- false가 있으면 suggestion에 B와 가장 가까운 올바른 명사를 넣어 (없으면 "").
 
-[2단계: 유사도 점수] 두 단어가 모두 true일 때만 아래 세 가지를 각각 0~100 정수로 매겨.
-1) semantic (의미적 거리): 사전적 정의와 개념적 특징이 얼마나 겹치는가
-2) contextual (문맥적 공생): 한 문장이나 비슷한 상황·맥락에서 함께 자주 등장하는가
-3) relational (관계적 구조): 상위·하위 개념, 같은 분류, 부분-전체, 반대, 도구-용도 같은 관계로 얼마나 가깝게 연결되는가
+2) relation: A와 B의 관계 하나
+synonym(동의어) / antonym(반의어) / hypernym(B가 A의 상위어) / hyponym(B가 A의 하위어) / sibling(같은 상위 범주, 예: 사과-배) / related(자주 함께 쓰이는 관련어) / none
 
-점수 기준 (너무 후하게 주지 마):
-- 거의 같은 뜻의 동의어: 85~97
-- 같은 작은 분류(예: 사과-배): 55~75
-- 같은 큰 분류(예: 사과-당근): 35~55
-- 자주 함께 쓰이지만 종류는 다름(예: 학교-연필): 25~50
-- 약하게 연결: 10~30
-- 거의 관련 없음: 0~10
+3) 점수 (0~100 정수)
+- semantic: 사전적 정의와 개념적 특징이 겹치는 정도
+- contextual: 같은 문장·비슷한 맥락에서 함께 등장하는 정도
+- relational: 상하위·반의·부분-전체 등 관계 구조가 얼마나 긴밀한가
+반의어·상위어·하위어는 뜻이 직접 이어진 가까운 관계이므로 점수를 높게 줘: relation이 antonym/hypernym/hyponym이면 세 점수 모두 70 이상, relational은 85 이상.
+synonym 85~97, sibling 55~75, related 25~55, 약한 연결 10~30, 무관 0~10.
 
-explanation은 초등학생도 이해할 수 있게 존댓말(~예요)로 한 문장, 40자 안쪽으로 써.
+explanation: 초등학생도 이해할 존댓말 한 문장 (35자 이내).
 
 A(정답): ${a}
 B(추측): ${b}
 
-출력 형식:
-{"a_ok": true, "b_ok": true, "suggestion": "", "semantic": 0, "contextual": 0, "relational": 0, "explanation": ""}`;
+{"a_ok":true,"b_ok":true,"b_noun":true,"suggestion":"","relation":"none","semantic":0,"contextual":0,"relational":0,"explanation":""}`;
+
+const RELATIONS = new Set(['synonym', 'antonym', 'hypernym', 'hyponym', 'sibling', 'related', 'none']);
 
 export async function judgeSimilarity(a, b) {
   const raw = extractJson(await callGemini(SIMILARITY_PROMPT(a, b)));
-  const aOk = raw.a_ok !== false;
-  const bOk = raw.b_ok !== false;
+  const rel = String(raw.relation ?? '').toLowerCase();
   return {
-    aOk,
-    bOk,
+    aOk: raw.a_ok !== false,
+    bOk: raw.b_ok !== false,
+    bNoun: raw.b_noun !== false,
+    relation: RELATIONS.has(rel) ? rel : 'none',
     suggestion: typeof raw.suggestion === 'string' ? raw.suggestion.trim() : '',
     semantic: clampInt(raw.semantic),
     contextual: clampInt(raw.contextual),
@@ -133,7 +138,7 @@ export async function computerGuess(history, used) {
   const lines = history.length
     ? history.map((h) => `- ${h.word}: ${h.total}%`).join('\n')
     : '(아직 추측한 단어가 없어)';
-  const prompt = `너는 '히든 워드'를 하는 플레이어야. 숨겨진 정답 단어는 초등학생이 아는 흔한 한국어 단어(대부분 명사)야.
+  const prompt = `너는 '히든 워드'를 하는 플레이어야. 숨겨진 정답 단어는 초등학생이 아는 흔한 한국어 명사야.
 정답은 모르고, 지금까지 네가 추측한 단어와 정답과의 유사도(%)만 알아. 점수가 높은 단어와 비슷한 방향으로, 점수가 낮은 단어와는 다른 방향으로 다음 추측 단어 하나를 골라.
 첫 추측이면 동물, 음식, 자연, 학교 물건, 생활용품 등 다양한 분류에서 흔한 단어를 하나 골라.
 
@@ -142,7 +147,7 @@ ${lines}
 
 이미 쓴 단어는 다시 고르면 안 돼: ${used.length ? used.join(', ') : '없음'}
 
-JSON 하나로만 답해. 한글 단어 하나만 넣어.
+JSON 하나로만 답해. 한글 명사 하나만 넣어.
 {"guess": ""}`;
   const raw = extractJson(await callGemini(prompt, { temperature: 0.9, timeoutMs: 15000 }));
   return typeof raw.guess === 'string' ? raw.guess.normalize('NFC').trim() : '';

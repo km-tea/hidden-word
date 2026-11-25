@@ -9,6 +9,10 @@ const COMPUTER_ID = 'computer';
 const MAX_PLAYERS = 8;
 const WORD_RE = /^[가-힣]{1,10}$/;
 const WEIGHTS = { semantic: 0.4, contextual: 0.3, relational: 0.3 };
+// 동의어·반의어·상위어·하위어는 뜻이 직접 이어진 관계라서 점수의 바닥(최소값)을 보장해요.
+const RELATION_FLOOR = { synonym: 90, antonym: 82, hypernym: 80, hyponym: 80 };
+// 동사·형용사처럼 보이는 어미는 AI에게 묻기 전에 바로 걸러요.
+const NOT_NOUN_RE = /(하다|되다|시키다|스럽다|롭다|있다|없다|했다|된다|한다)$/;
 
 /* ───────── 공통 도우미 ───────── */
 
@@ -70,7 +74,7 @@ const SCHEMA = [
      created_at timestamptz not null default now(),
      unique (room_code, player_id, word)
    )`,
-  `create table if not exists similarity_cache (
+  `create table if not exists similarity_cache_v2 (
      word_a text not null,
      word_b text not null,
      semantic int not null,
@@ -115,7 +119,19 @@ function requireWord(raw) {
       suggestion: '',
     });
   }
+  assertNoun(word);
   return word;
+}
+
+function assertNoun(word) {
+  if (NOT_NOUN_RE.test(word)) {
+    throw new HttpError(422, 'INVALID_WORD', '명사만 입력할 수 있어요.', {
+      which: 'guess',
+      word,
+      suggestion: '',
+      reason: 'not_noun',
+    });
+  }
 }
 
 function requirePlayerId(raw) {
@@ -144,7 +160,7 @@ async function similarity(answer, guess, { trustAnswer = false } = {}) {
   const [x, y] = answer < guess ? [answer, guess] : [guess, answer]; // 순서와 상관없이 같은 점수
 
   const cached = await q`select semantic, contextual, relational, total, explanation
-                         from similarity_cache where word_a = ${x} and word_b = ${y}`;
+                         from similarity_cache_v2 where word_a = ${x} and word_b = ${y}`;
   if (cached.length) return { ok: true, ...cached[0] };
 
   let j;
@@ -163,27 +179,35 @@ async function similarity(answer, guess, { trustAnswer = false } = {}) {
   if (!j.bOk) return { ok: false, which: 'guess', suggestion: j.suggestion };
   if (!j.aOk && !trustAnswer) return { ok: false, which: 'answer', suggestion: j.suggestion };
 
-  const raw =
-    j.semantic * WEIGHTS.semantic + j.contextual * WEIGHTS.contextual + j.relational * WEIGHTS.relational;
-  const total = Math.min(99, Math.round(raw)); // 정답이 아니면 100%는 나오지 않아요
-  const result = {
-    semantic: j.semantic,
-    contextual: j.contextual,
-    relational: j.relational,
-    total,
-    explanation: j.explanation,
-  };
-  await q`insert into similarity_cache (word_a, word_b, semantic, contextual, relational, total, explanation)
+  if (!j.bNoun) return { ok: false, which: 'guess', reason: 'not_noun', suggestion: j.suggestion };
+
+  let { semantic, contextual, relational } = j;
+  const floor = RELATION_FLOOR[j.relation] || 0;
+  if (floor) {
+    // 점수 막대도 자연스럽게 보이도록 세 점수를 함께 끌어올려요.
+    semantic = Math.max(semantic, floor - 12);
+    contextual = Math.max(contextual, floor - 12);
+    relational = Math.max(relational, floor);
+  }
+  const raw = semantic * WEIGHTS.semantic + contextual * WEIGHTS.contextual + relational * WEIGHTS.relational;
+  const total = Math.min(99, Math.max(Math.round(raw), floor)); // 정답이 아니면 100%는 나오지 않아요
+  const result = { semantic, contextual, relational, total, explanation: j.explanation };
+  await q`insert into similarity_cache_v2 (word_a, word_b, semantic, contextual, relational, total, explanation)
           values (${x}, ${y}, ${result.semantic}, ${result.contextual}, ${result.relational}, ${result.total}, ${result.explanation})
           on conflict do nothing`;
   return { ok: true, ...result };
 }
 
 function invalidWordError(word, r) {
-  return new HttpError(422, 'INVALID_WORD', '이해하지 못한 단어예요. 오타가 없는지 확인하고 다시 입력해 주세요.', {
+  const message =
+    r.reason === 'not_noun'
+      ? '명사만 입력할 수 있어요.'
+      : '이해하지 못한 단어예요. 오타가 없는지 확인하고 다시 입력해 주세요.';
+  return new HttpError(422, 'INVALID_WORD', message, {
     which: r.which,
     word,
     suggestion: r.suggestion || '',
+    reason: r.reason || '',
   });
 }
 
@@ -288,6 +312,7 @@ async function handlePractice(body) {
       suggestion: '',
     });
   }
+  assertNoun(guess);
   const r = await similarity(answer, guess);
   if (!r.ok) throw invalidWordError(r.which === 'answer' ? answer : guess, r);
   return { answer, guess, result: r };
@@ -353,22 +378,86 @@ async function handleStart(code, body) {
   return { ok: true };
 }
 
+async function loadComputerHistory(code) {
+  const q = db();
+  return q`select word, total from guesses where room_code = ${code} and player_id = ${COMPUTER_ID} order by id`;
+}
+
+async function pickComputerWord(mine, used) {
+  let word = '';
+  try {
+    word = await computerGuess(mine.map((g) => ({ word: g.word, total: g.total })), used);
+  } catch (err) {
+    if (!(err instanceof AiError)) throw err;
+    console.error('[computer-guess]', err.message);
+  }
+  if (!WORD_RE.test(word) || used.includes(word)) word = pickRandom(used);
+  return word;
+}
+
+// 컴퓨터의 한 수: 단어를 고르고(미리 골라 둔 게 있으면 그걸 쓰고) 유사도를 구해 기록해요.
+async function playComputerMove(room, mine, firstWord) {
+  const used = mine.map((g) => g.word);
+  let word = firstWord;
+  for (let tried = 0; tried < 3; tried++) {
+    if (!word || used.includes(word)) word = await pickComputerWord(mine, used);
+    const r = await similarity(room.answer, word, { trustAnswer: true });
+    if (!r.ok) {
+      used.push(word); // 이해 못 한 단어·명사가 아닌 단어면 다른 단어로 다시
+      word = '';
+      continue;
+    }
+    const { correct, finished } = await recordGuess(room, COMPUTER_ID, word, r);
+    return { word, total: r.total, correct, finished };
+  }
+  throw new HttpError(502, 'AI_ERROR', '컴퓨터가 단어를 고르지 못했어요. 잠시 뒤에 다시 시도해 주세요.');
+}
+
 async function handleGuess(code, body) {
   const q = db();
   const playerId = requirePlayerId(body.playerId);
   const word = requireWord(body.word);
-  const room = await getRoom(code);
-  await requireMember(code, playerId);
+  const [room, member, dup] = await Promise.all([
+    getRoom(code),
+    q`select 1 from players where room_code = ${code} and player_id = ${playerId}`,
+    q`select 1 from guesses where room_code = ${code} and player_id = ${playerId} and word = ${word}`,
+  ]);
+  if (!member.length) throw new HttpError(403, 'NOT_MEMBER', '이 방의 참가자가 아니에요.');
   if (room.status !== 'playing') throw new HttpError(409, 'NOT_PLAYING', '지금은 단어를 입력할 수 없어요.');
-
-  const dup = await q`select 1 from guesses where room_code = ${code} and player_id = ${playerId} and word = ${word}`;
   if (dup.length) throw new HttpError(409, 'DUPLICATE', '이미 입력한 단어예요.', { word });
+
+  // 컴퓨터는 정답을 모르니 사람의 추측과 상관없이 다음 단어를 미리 골라 둬요 (기다리는 시간 단축)
+  let pre = null;
+  if (room.mode === 'computer') {
+    pre = loadComputerHistory(code)
+      .then(async (mine) => ({ mine, word: await pickComputerWord(mine, mine.map((g) => g.word)) }))
+      .catch(() => null);
+  }
 
   const r = await similarity(room.answer, word, { trustAnswer: true });
   if (!r.ok) throw invalidWordError(word, r);
+  const human = await recordGuess(room, playerId, word, r);
 
-  const { correct, finished } = await recordGuess(room, playerId, word, r);
-  return { word, result: r, correct, finished };
+  // 같은 요청 안에서 컴퓨터도 바로 한 수 둬요. 실패해도 사람의 결과는 그대로 돌려주고,
+  // 화면이 /computer 로 이어서 진행해요.
+  let computer = null;
+  if (room.mode === 'computer' && !human.finished) {
+    try {
+      const picked = await pre;
+      const mine = picked ? picked.mine : await loadComputerHistory(code);
+      const [{ n }] = await q`select count(*)::int as n from guesses where room_code = ${code} and player_id <> ${COMPUTER_ID}`;
+      if (mine.length < n) computer = await playComputerMove(room, mine, picked && picked.word);
+    } catch (err) {
+      console.error('[computer-move]', err.message);
+    }
+  }
+  return {
+    word,
+    result: r,
+    correct: human.correct,
+    finished: human.finished || Boolean(computer && computer.finished),
+    computer,
+  };
 }
 
 async function handleComputerTurn(code, body) {
@@ -379,33 +468,10 @@ async function handleComputerTurn(code, body) {
   if (room.mode !== 'computer') throw new HttpError(409, 'NOT_COMPUTER', '컴퓨터와 하는 게임이 아니에요.');
   if (room.status !== 'playing') return { skipped: true };
 
-  const rows = await q`select player_id, word, total from guesses where room_code = ${code} order by id`;
-  const mine = rows.filter((g) => g.player_id === COMPUTER_ID);
-  const humanCount = rows.filter((g) => g.player_id !== COMPUTER_ID).length;
-  if (mine.length >= humanCount) return { skipped: true }; // 아직 컴퓨터 차례가 아니에요
-
-  const used = mine.map((g) => g.word);
-  let tried = 0;
-  while (tried < 3) {
-    tried++;
-    let word = '';
-    try {
-      word = await computerGuess(mine.map((g) => ({ word: g.word, total: g.total })), used);
-    } catch (err) {
-      if (!(err instanceof AiError)) throw err;
-      console.error('[computer-guess]', err.message);
-    }
-    if (!WORD_RE.test(word) || used.includes(word)) word = pickRandom(used);
-
-    const r = await similarity(room.answer, word, { trustAnswer: true });
-    if (!r.ok) {
-      used.push(word); // 이해 못 한 단어면 다른 단어로 다시
-      continue;
-    }
-    const { correct, finished } = await recordGuess(room, COMPUTER_ID, word, r);
-    return { word, total: r.total, correct, finished };
-  }
-  throw new HttpError(502, 'AI_ERROR', '컴퓨터가 단어를 고르지 못했어요. 잠시 뒤에 다시 시도해 주세요.');
+  const mine = await loadComputerHistory(code);
+  const [{ n }] = await q`select count(*)::int as n from guesses where room_code = ${code} and player_id <> ${COMPUTER_ID}`;
+  if (mine.length >= n) return { skipped: true }; // 아직 컴퓨터 차례가 아니에요
+  return playComputerMove(room, mine, null);
 }
 
 async function handleGiveUp(code, body) {

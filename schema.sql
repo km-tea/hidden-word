@@ -36,7 +36,7 @@ create table if not exists guesses (
 );
 
 -- AI 판정 결과를 저장해 같은 단어쌍은 다시 묻지 않아요 (비용 절약 + 점수 일관성)
-create table if not exists similarity_cache (
+create table if not exists similarity_cache_v2 (
   word_a text not null,
   word_b text not null,
   semantic int not null,

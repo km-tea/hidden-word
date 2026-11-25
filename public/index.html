@@ -20,6 +20,7 @@
         <li><b>의미적 거리 (40%)</b> — 사전적 정의와 개념적 특징이 얼마나 겹치는지</li>
         <li><b>문맥적 공생 (30%)</b> — 같은 문장이나 비슷한 상황에 얼마나 자주 함께 나오는지</li>
         <li><b>관계적 구조 (30%)</b> — 같은 종류, 부분과 전체처럼 어떤 관계로 이어져 있는지</li>
+        <li><b>가까운 관계는 높은 점수</b> — 반의어, 상위어, 하위어처럼 뜻이 바로 이어지는 단어는 점수가 높게 나와요</li>
       </ul>
     </details>
   </header>
@@ -89,7 +90,7 @@
         <ul id="play-players" class="chips"></ul>
 
         <form id="guess-form" class="guess-form" autocomplete="off">
-          <input id="guess" type="text" maxlength="10" placeholder="비슷하다고 생각하는 단어를 입력하세요" />
+          <input id="guess" type="text" maxlength="10" placeholder="비슷하다고 생각하는 명사를 입력하세요" />
           <button id="btn-guess" class="btn primary" type="submit">확인</button>
         </form>
         <p id="status" class="status" aria-live="polite"></p>
@@ -116,7 +117,7 @@
           <input id="p-answer" type="text" maxlength="10" placeholder="예: 사과" />
         </label>
         <label class="field">
-          <span>유사 단어</span>
+          <span>유사 단어 (명사만)</span>
           <input id="p-guess" type="text" maxlength="10" placeholder="예: 바나나" />
         </label>
         <div class="row">

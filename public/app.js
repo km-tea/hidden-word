@@ -38,6 +38,7 @@
   }
 
   const WORD_RE = /^[가-힣]{1,10}$/;
+  const NOT_NOUN_RE = /(하다|되다|시키다|스럽다|롭다|있다|없다|했다|된다|한다)$/; // 동사·형용사 어미
   const heat = (t) => `hsl(${Math.round(220 - t * 2.1)} 80% 58%)`; // 0% 파랑 → 100% 빨강
   const label = (t) =>
     t >= 90 ? '거의 다 왔어요!' : t >= 70 ? '아주 가까워요' : t >= 50 ? '가까운 편이에요' : t >= 30 ? '조금 관련 있어요' : t >= 10 ? '많이 멀어요' : '관련이 거의 없어요';
@@ -107,6 +108,19 @@
     const word = d.word || fallbackWord || '';
     const who = d.which === 'answer' ? '정답 단어' : '유사 단어';
     const sug = d.suggestion && d.suggestion !== word ? d.suggestion : '';
+    if (d.reason === 'not_noun') {
+      const choice = await popup({
+        icon: '📝',
+        title: '명사만 입력할 수 있어요',
+        message: word
+          ? `‘${word}’은(는) 명사가 아니에요. 사물·동물·장소처럼 이름이 되는 단어를 입력해 주세요.`
+          : '사물·동물·장소처럼 이름이 되는 단어(명사)를 입력해 주세요.',
+        hint: sug ? `이런 단어는 어때요? ‘${sug}’` : '',
+        button: '다시 입력',
+        alt: sug ? `‘${sug}’(으)로 입력` : undefined,
+      });
+      return choice === 'alt' ? sug : null;
+    }
     const choice = await popup({
       icon: '✏️',
       title: '다시 입력해 주세요',
@@ -255,6 +269,7 @@
     if (!word) return '단어를 입력해 주세요.';
     if (/\s/.test(word)) return '띄어쓰기 없이 한 단어만 입력해 주세요.';
     if (!WORD_RE.test(word)) return '한글 단어(1~10글자)만 입력할 수 있어요. 자음·모음만 있거나 영어·숫자가 섞이면 안 돼요.';
+    if (NOT_NOUN_RE.test(word)) return '명사만 입력할 수 있어요. 사물·동물·장소처럼 이름이 되는 단어를 입력해 주세요.';
     return '';
   }
 
@@ -270,7 +285,7 @@
       return;
     }
 
-    setBusy(true, 'AI가 유사도를 계산하고 있어요…');
+    setBusy(true, room.mode === 'computer' ? '🤖 AI가 유사도를 계산하고, 컴퓨터도 생각하고 있어요…' : 'AI가 유사도를 계산하고 있어요…');
     let finished = false;
     try {
       const r = await api(`/rooms/${room.code}/guess`, { method: 'POST', body: { playerId, word } });
@@ -479,6 +494,12 @@
         el.focus();
         return;
       }
+    }
+
+    if (NOT_NOUN_RE.test(guess)) {
+      await popup({ icon: '📝', title: '명사만 입력할 수 있어요', message: `유사 단어는 명사만 입력할 수 있어요. ‘${guess}’ 대신 사물·동물·장소처럼 이름이 되는 단어를 넣어 주세요.`, button: '다시 입력' });
+      gEl.focus();
+      return;
     }
 
     const btn = $('#p-submit');
