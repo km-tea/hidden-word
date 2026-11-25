@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>히든 워드</title>
+  <meta name="description" content="AI가 알려주는 유사도 %로 숨겨진 단어를 맞히는 게임" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1><span class="logo">?</span> 히든 워드</h1>
+    <p>숨겨진 단어와 얼마나 가까운지 AI가 %로 알려줘요. 가까운 단어를 따라가 정답을 찾아보세요!</p>
+    <details class="how">
+      <summary>유사도는 이렇게 계산해요</summary>
+      <ul>
+        <li><b>의미적 거리 (40%)</b> — 사전적 정의와 개념적 특징이 얼마나 겹치는지</li>
+        <li><b>문맥적 공생 (30%)</b> — 같은 문장이나 비슷한 상황에 얼마나 자주 함께 나오는지</li>
+        <li><b>관계적 구조 (30%)</b> — 같은 종류, 부분과 전체처럼 어떤 관계로 이어져 있는지</li>
+      </ul>
+    </details>
+  </header>
+
+  <main class="layout">
+    <!-- ───────── 게임 ───────── -->
+    <section id="game" class="panel">
+      <!-- 로비 -->
+      <div id="view-lobby">
+        <h2>게임 시작하기</h2>
+        <label class="field">
+          <span>내 이름</span>
+          <input id="name" type="text" maxlength="8" placeholder="최대 8글자" autocomplete="off" />
+        </label>
+
+        <div class="mode-grid">
+          <button id="btn-computer" class="mode" type="button">
+            <span class="mode-icon">🤖</span>
+            <strong>컴퓨터와 대결</strong>
+            <small>한 번씩 번갈아 추측해요. 컴퓨터보다 먼저 맞히면 승리!</small>
+          </button>
+          <button id="btn-create" class="mode" type="button">
+            <span class="mode-icon">👥</span>
+            <strong>방 만들기</strong>
+            <small>친구들과 함께해요. 2명 이상 모이면 시작할 수 있어요.</small>
+          </button>
+        </div>
+
+        <form id="join-form" class="join">
+          <label class="field grow">
+            <span>방 코드로 입장</span>
+            <input id="join-code" type="text" maxlength="4" placeholder="예: K7QX" autocomplete="off" />
+          </label>
+          <button class="btn" type="submit">입장</button>
+        </form>
+      </div>
+
+      <!-- 대기실 -->
+      <div id="view-waiting" hidden>
+        <h2>대기실</h2>
+        <div class="code-box">
+          <span>방 코드</span>
+          <strong id="wait-code">----</strong>
+          <button id="btn-copy" class="btn ghost" type="button">초대 링크 복사</button>
+        </div>
+        <ul id="wait-players" class="chips"></ul>
+        <p id="wait-note" class="muted"></p>
+        <div class="row">
+          <button id="btn-start" class="btn primary" type="button">게임 시작</button>
+          <button id="btn-leave-wait" class="btn ghost" type="button">나가기</button>
+        </div>
+      </div>
+
+      <!-- 게임 화면 -->
+      <div id="view-play" hidden>
+        <div class="play-head">
+          <div>
+            <h2 id="play-title">게임 중</h2>
+            <p id="play-sub" class="muted"></p>
+          </div>
+          <div class="row">
+            <button id="btn-giveup" class="btn ghost" type="button">포기하기</button>
+            <button id="btn-new" class="btn ghost" type="button" hidden>새 게임</button>
+          </div>
+        </div>
+
+        <ul id="play-players" class="chips"></ul>
+
+        <form id="guess-form" class="guess-form" autocomplete="off">
+          <input id="guess" type="text" maxlength="10" placeholder="비슷하다고 생각하는 단어를 입력하세요" />
+          <button id="btn-guess" class="btn primary" type="submit">확인</button>
+        </form>
+        <p id="status" class="status" aria-live="polite"></p>
+
+        <div class="list-head">
+          <h3>추측 기록 <span id="guess-count" class="muted"></span></h3>
+          <div class="seg" role="group" aria-label="정렬">
+            <button type="button" data-sort="sim" class="on">유사도순</button>
+            <button type="button" data-sort="new">최신순</button>
+          </div>
+        </div>
+        <ol id="guess-list" class="guess-list"></ol>
+        <p id="guess-empty" class="muted empty">아직 아무도 추측하지 않았어요. 첫 단어를 입력해 보세요!</p>
+      </div>
+    </section>
+
+    <!-- ───────── 연습실 ───────── -->
+    <aside id="practice" class="panel side">
+      <h2>🧪 연습실</h2>
+      <p class="muted">정답 단어와 유사 단어를 직접 넣고, AI가 판단하는 유사도를 미리 살펴보세요.</p>
+      <form id="practice-form" autocomplete="off">
+        <label class="field">
+          <span>정답 단어</span>
+          <input id="p-answer" type="text" maxlength="10" placeholder="예: 사과" />
+        </label>
+        <label class="field">
+          <span>유사 단어</span>
+          <input id="p-guess" type="text" maxlength="10" placeholder="예: 바나나" />
+        </label>
+        <div class="row">
+          <button id="p-submit" class="btn primary" type="submit">유사도 확인</button>
+          <button id="p-example" class="btn ghost" type="button">예시 넣기</button>
+        </div>
+      </form>
+      <div id="p-result" class="p-result" hidden></div>
+    </aside>
+  </main>
+
+  <footer class="foot">히든 워드 · Google Gemini · Neon · Netlify</footer>
+
+  <!-- 팝업 -->
+  <dialog id="popup">
+    <form method="dialog">
+      <div id="popup-icon" class="popup-icon">💬</div>
+      <h3 id="popup-title"></h3>
+      <p id="popup-msg"></p>
+      <p id="popup-hint" class="popup-hint" hidden></p>
+      <div class="popup-actions">
+        <button id="popup-alt" class="btn ghost" type="button" hidden></button>
+        <button id="popup-ok" class="btn primary" value="ok">확인</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

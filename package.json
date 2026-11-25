@@ -1,0 +1,17 @@
+{
+  "name": "hidden-word",
+  "version": "1.0.0",
+  "description": "히든 워드 — AI가 알려주는 유사도로 숨겨진 단어를 맞히는 게임",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "check": "node --check netlify/functions/api.mjs && node --check netlify/functions/gemini.mjs && node --check netlify/functions/words.mjs && node --check public/app.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
