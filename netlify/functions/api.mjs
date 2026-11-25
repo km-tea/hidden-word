@@ -1,7 +1,7 @@
 // 히든 워드 API — Netlify Functions(v2) 하나로 모든 /api/* 요청을 처리해요.
 import { neon } from '@neondatabase/serverless';
 import { pickAnswer, pickRandom } from './words.mjs';
-import { judgeSimilarity, computerGuess, AiError } from './gemini.mjs';
+import { judgeSimilarity, computerGuess, pingGemini, AiError } from './gemini.mjs';
 
 export const config = { path: '/api/*' };
 
@@ -153,7 +153,9 @@ async function similarity(answer, guess, { trustAnswer = false } = {}) {
   } catch (err) {
     if (err instanceof AiError) {
       console.error('[gemini]', err.message);
-      throw new HttpError(502, 'AI_ERROR', 'AI가 잠시 응답하지 못했어요. 잠깐 뒤에 다시 시도해 주세요.');
+      throw new HttpError(502, 'AI_ERROR', 'AI가 잠시 응답하지 못했어요. 잠깐 뒤에 다시 시도해 주세요.', {
+        detail: err.message,
+      });
     }
     throw err;
   }
@@ -430,6 +432,7 @@ export default async (req) => {
         db: Boolean(process.env.DATABASE_URL || process.env.NETLIFY_DATABASE_URL),
         gemini: Boolean(process.env.GEMINI_API_KEY),
         model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+        ...(url.searchParams.get('test') ? { geminiTest: await pingGemini() } : {}),
       });
     }
 

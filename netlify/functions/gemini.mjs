@@ -29,7 +29,8 @@ async function callGemini(prompt, { temperature = 0, timeoutMs = 20000 } = {}) {
         signal: ctrl.signal,
       });
       if (res.status === 429 || res.status >= 500) {
-        lastErr = new AiError(`Gemini 응답 오류 (${res.status})`);
+        const detail = (await res.text().catch(() => '')).slice(0, 300);
+        lastErr = new AiError(`Gemini 응답 오류 (${res.status}) ${detail}`);
         await new Promise((r) => setTimeout(r, 700));
         continue;
       }
@@ -52,6 +53,17 @@ async function callGemini(prompt, { temperature = 0, timeoutMs = 20000 } = {}) {
     }
   }
   throw lastErr ?? new AiError('Gemini 호출 실패');
+}
+
+// 연결 점검용: /api/health?test=1 에서 호출해 진짜 원인을 보여줘요.
+export async function pingGemini() {
+  const t0 = Date.now();
+  try {
+    const reply = await callGemini('JSON 하나로만 답해: {"ok": true}', { timeoutMs: 15000 });
+    return { ok: true, ms: Date.now() - t0, reply: reply.slice(0, 100) };
+  } catch (err) {
+    return { ok: false, ms: Date.now() - t0, error: err.message };
+  }
 }
 
 // 모델이 코드블록(```json)이나 설명을 덧붙여도 JSON만 꺼내요.

@@ -69,6 +69,9 @@
     return data;
   }
 
+  // 원인 파악용: 서버가 보내준 상세 사유(있을 때만) — 운영 전에는 지워도 돼요.
+  const errHint = (err) => (err && err.data && err.data.detail ? String(err.data.detail).slice(0, 200) : '');
+
   /* ───────── 팝업 ───────── */
   const dlg = $('#popup');
   function popup({ icon = '💬', title, message, hint, button = '확인', alt }) {
@@ -285,7 +288,7 @@
       } else if (err.code === 'NOT_PLAYING') {
         await refresh().catch(() => {});
       } else {
-        await popup({ icon: '⚠️', title: '앗, 문제가 생겼어요', message: err.message, button: '다시 시도' });
+        await popup({ icon: '⚠️', title: '앗, 문제가 생겼어요', message: err.message, hint: errHint(err), button: '다시 시도' });
       }
       guessInput.focus();
       return;
@@ -309,7 +312,7 @@
       await api(`/rooms/${room.code}/computer`, { method: 'POST', body: { playerId } });
       await refresh();
     } catch (err) {
-      await popup({ icon: '🤖', title: '컴퓨터가 잠시 멈췄어요', message: err.message, button: '확인' });
+      await popup({ icon: '🤖', title: '컴퓨터가 잠시 멈췄어요', message: err.message, hint: errHint(err), button: '확인' });
     } finally {
       thinking = false;
       setBusy(false);
@@ -493,7 +496,7 @@
         if (picked) el.value = picked;
         el.focus();
       } else {
-        await popup({ icon: '⚠️', title: '앗, 문제가 생겼어요', message: err.message, button: '확인' });
+        await popup({ icon: '⚠️', title: '앗, 문제가 생겼어요', message: err.message, hint: errHint(err), button: '확인' });
       }
     } finally {
       btn.disabled = false;
