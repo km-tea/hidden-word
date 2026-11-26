@@ -35,3 +35,13 @@ export function pickRandom(exclude = []) {
   const list = pool.length ? pool : WORDS;
   return list[Math.floor(Math.random() * list.length)];
 }
+
+// 서로 다른 후보 n개 (출제자가 이 중 하나를 정답으로 골라요)
+export function pickOptions(n = 3) {
+  const pool = [...WORDS];
+  const out = [];
+  while (out.length < n && pool.length) {
+    out.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  return out;
+}

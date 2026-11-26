@@ -95,7 +95,7 @@ const SIMILARITY_PROMPT = (a, b) => `한국어 단어 게임 '히든 워드'의 
 
 1) 단어 확인
 - a_ok, b_ok: 실제로 쓰이는 한국어 단어인가? (오타, 의미 없는 글자, 자음·모음만 있는 글자, 사람 이름, 욕설이면 false)
-- b_noun: B가 명사인가? (동사·형용사·부사·감탄사·활용형이면 false. 예: 먹다, 예쁘다, 빨리는 false)
+- a_noun, b_noun: A, B가 각각 명사인가? (동사·형용사·부사·감탄사·활용형이면 false. 예: 먹다, 예쁘다, 빨리는 false)
 - false가 있으면 suggestion에 B와 가장 가까운 올바른 명사를 넣어 (없으면 "").
 
 2) relation: A와 B의 관계 하나
@@ -113,7 +113,7 @@ explanation: 초등학생도 이해할 존댓말 한 문장 (35자 이내).
 A(정답): ${a}
 B(추측): ${b}
 
-{"a_ok":true,"b_ok":true,"b_noun":true,"suggestion":"","relation":"none","semantic":0,"contextual":0,"relational":0,"explanation":""}`;
+{"a_ok":true,"b_ok":true,"a_noun":true,"b_noun":true,"suggestion":"","relation":"none","semantic":0,"contextual":0,"relational":0,"explanation":""}`;
 
 const RELATIONS = new Set(['synonym', 'antonym', 'hypernym', 'hyponym', 'sibling', 'related', 'none']);
 
@@ -123,6 +123,7 @@ export async function judgeSimilarity(a, b) {
   return {
     aOk: raw.a_ok !== false,
     bOk: raw.b_ok !== false,
+    aNoun: raw.a_noun !== false,
     bNoun: raw.b_noun !== false,
     relation: RELATIONS.has(rel) ? rel : 'none',
     suggestion: typeof raw.suggestion === 'string' ? raw.suggestion.trim() : '',
@@ -150,5 +151,27 @@ ${lines}
 JSON 하나로만 답해. 한글 명사 하나만 넣어.
 {"guess": ""}`;
   const raw = extractJson(await callGemini(prompt, { temperature: 0.9, timeoutMs: 15000 }));
+  return typeof raw.guess === 'string' ? raw.guess.normalize('NFC').trim() : '';
+}
+
+// ───────── 새 규칙용: 컴퓨터가 출제자일 때 힌트 후보 / 맞히는 쪽일 때 정답 추측 ─────────
+
+export async function computerHintCandidates(answer, used) {
+  const prompt = `'히든 워드' 게임에서 정답 단어는 "${answer}"야. 정답과 뜻이 직접 이어지는 명사 6개를 골라 JSON 하나로만 답해.
+- 반의어, 상위어(더 큰 분류), 하위어(더 구체적인 종류), 동의어를 섞어서 골라.
+- 초등학생도 아는 흔한 한글 명사만. 정답 자체와 아래 제외 단어는 넣지 마.
+제외: ${used.length ? used.join(', ') : '없음'}
+{"words":["","","","","",""]}`;
+  const raw = extractJson(await callGemini(prompt, { temperature: 0.7, timeoutMs: 15000 }));
+  return Array.isArray(raw.words) ? raw.words.map((w) => String(w).normalize('NFC').trim()) : [];
+}
+
+export async function computerAnswerGuess(hints, wrong) {
+  const prompt = `너는 '히든 워드'의 추리 플레이어야. 숨겨진 정답은 초등학생이 아는 흔한 한국어 명사 하나야.
+출제자가 정답과 뜻이 가까운 힌트 단어(반의어·상위어·하위어·동의어 등)를 줬어. 힌트를 종합해서 정답일 가능성이 가장 높은 명사 하나를 추측해.
+힌트: ${hints.join(', ')}
+이미 틀린 추측(다시 말하면 안 돼): ${wrong.length ? wrong.join(', ') : '없음'}
+JSON 하나로만 답해. {"guess":""}`;
+  const raw = extractJson(await callGemini(prompt, { temperature: 0.5, timeoutMs: 15000 }));
   return typeof raw.guess === 'string' ? raw.guess.normalize('NFC').trim() : '';
 }
